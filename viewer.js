@@ -74,7 +74,7 @@ Vue.component('wmc-viewer', {
 
         <!-- Sidebar mode tabs -->
         <div class="sidebar-tabs">
-          <button class="stab" :class="{active: sideMode==='clusters'}" @click="sideMode='clusters'">
+          <button class="stab" :class="{active: sideMode==='clusters'}" @click="sideMode='clusters'" v-if="clustersEnabled">
             Clusters
           </button>
           <button class="stab" :class="{active: sideMode==='tracts'}" @click="sideMode='tracts'">
@@ -136,7 +136,7 @@ Vue.component('wmc-viewer', {
 
         <!-- Tabs -->
         <div class="wmc-tabs">
-          <button class="tab-btn" :class="{active: tab==='cluster'}" @click="tab='cluster'">Cluster View</button>
+          <button class="tab-btn" :class="{active: tab==='cluster'}" @click="tab='cluster'" v-if="clustersEnabled">Cluster View</button>
           <button class="tab-btn" :class="{active: tab==='tract'}"   @click="tab='tract'">Tract View</button>
           <button class="tab-btn" :class="{active: tab==='matrix'}"  @click="tab='matrix'">Full Matrix</button>
         </div>
@@ -222,6 +222,30 @@ Vue.component('wmc-viewer', {
                 </div>
               </div>
             </div>
+
+            <!-- Per-tract images (radar + wordcloud) if available -->
+            <template v-if="tractImgsBase">
+              <div class="tract-img-row" style="margin-top:20px;">
+                <div class="panel-card">
+                  <div class="panel-card-title">Radar Chart</div>
+                  <img
+                    :src="tractImgUrl('radar')"
+                    :alt="selectedTract + ' radar'"
+                    style="width:100%;height:auto;display:block;background:#fff;"
+                    @error="$event.target.style.display='none'"
+                  />
+                </div>
+                <div class="panel-card">
+                  <div class="panel-card-title">Word Cloud</div>
+                  <img
+                    :src="tractImgUrl('wordcloud')"
+                    :alt="selectedTract + ' wordcloud'"
+                    style="width:100%;height:auto;display:block;background:#fff;"
+                    @error="$event.target.style.display='none'"
+                  />
+                </div>
+              </div>
+            </template>
 
             <!-- Mini strip: all topics for this tract -->
             <div class="tract-section-title" style="margin-top:24px;">All Topics (decoding score)</div>
@@ -319,9 +343,19 @@ Vue.component('wmc-viewer', {
   },
 
   computed: {
-    thresholdFolder() { return this.config.thresholds[this.selectedThreshold]; },
+    // Threshold config value may be a string (legacy) or an object
+    thresholdCfg()    {
+      const v = this.config.thresholds[this.selectedThreshold];
+      return typeof v === 'string' ? { folder: v } : v;
+    },
+    thresholdFolder() { return this.thresholdCfg.folder; },
     baseUrl()         { return `${this.config.dataBase}/${this.thresholdFolder}`; },
     dendroSrc()       { return `${this.baseUrl}/dendro.png`; },
+    // Per-tract image support
+    tractImgsBase()   { return this.thresholdCfg.tractImgsBase || null; },
+    tractImgSuffix()  { return this.thresholdCfg.tractImgSuffix || ''; },
+    // Whether this threshold has cluster-level images / clustering data
+    clustersEnabled() { return !this.thresholdCfg.noClusters; },
 
     activeCluster() {
       return this.clusters.find(c => c.id === this.selectedCluster) || null;
@@ -344,13 +378,24 @@ Vue.component('wmc-viewer', {
     }
   },
 
-  mounted() { this.loadData(); },
+  mounted() {
+    if (!this.clustersEnabled) {
+      this.sideMode = 'tracts';
+      this.tab = 'tract';
+    }
+    this.loadData();
+  },
 
   methods: {
     onThresholdChange() {
       this.loading = true;
       this.selectedCluster = null;
       this.selectedTract = null;
+      // If new threshold has no clustering, switch to tract mode/view
+      if (!this.clustersEnabled) {
+        this.sideMode = 'tracts';
+        this.tab = 'tract';
+      }
       this.loadData();
     },
 
@@ -364,7 +409,7 @@ Vue.component('wmc-viewer', {
         complete: (results) => {
           this.parseMatrix(results);
           this.loading = false;
-          if (this.clusters.length > 0) this.selectCluster(this.clusters[0].id);
+          if (this.clustersEnabled && this.clusters.length > 0) this.selectCluster(this.clusters[0].id);
         },
         error: (err) => {
           console.error('Failed to load matrix CSV:', err);
@@ -489,6 +534,11 @@ Vue.component('wmc-viewer', {
 
     clusterImg(type) {
       return `${this.baseUrl}/${this.selectedCluster}_${type}.png`;
+    },
+
+    tractImgUrl(type) {
+      if (!this.tractImgsBase || !this.selectedTract) return '';
+      return `${this.tractImgsBase}/${this.selectedTract}_${this.tractImgSuffix}_${type}.png`;
     },
 
     cellColor(tract, topic) {

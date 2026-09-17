@@ -16,6 +16,9 @@
 
 <script src="viewer.js"></script>
 <script>
+  // Base URL for per-tract PNG images on GitHub (public repo, raw content)
+  const GH_RAW = 'https://raw.githubusercontent.com/kimberlylray/ui-wmc-endpoint-decoding/main/assets/decoding/Decoding';
+
   new Vue({
     el: '#app',
     data: {
@@ -23,10 +26,39 @@
       config: {
         // base URL where testdata lives — override per deployment
         dataBase: 'testdata',
-        // available thresholds: key = display label, value = subfolder name
+        // Threshold config: folder = local data subfolder
+        //   noClusters   – hides Cluster tab/mode (true when no dendro/cluster images)
+        //   tractImgsBase – base URL to per-tract PNG images (radar/wordcloud)
+        //   tractImgSuffix – suffix used in per-tract image filenames
         thresholds: {
-          '0.15 (7 clusters)': 'thr-15',
-          '0.15 (5 clusters)': 'thr-15_5clusters'
+          '0.15 (7 clusters)': {
+            folder: 'thr-15',
+            tractImgsBase: GH_RAW + '/threshold-15_tract_decoding',
+            tractImgSuffix: 'thr-15'
+          },
+          '0.15 (5 clusters)': {
+            folder: 'thr-15_5clusters',
+            tractImgsBase: GH_RAW + '/threshold-15_tract_decoding',
+            tractImgSuffix: 'thr-15'
+          },
+          '0.05': {
+            folder: 'thr-05',
+            noClusters: true,
+            tractImgsBase: GH_RAW + '/threshold-05_tract_decoding',
+            tractImgSuffix: 'thr-05'
+          },
+          '0.10': {
+            folder: 'thr-10',
+            noClusters: true,
+            tractImgsBase: GH_RAW + '/threshold-10_tract_decoding',
+            tractImgSuffix: 'thr-10'
+          },
+          '0.20': {
+            folder: 'thr-20',
+            noClusters: true,
+            tractImgsBase: GH_RAW + '/threshold-20_tract_decoding',
+            tractImgSuffix: 'thr-20'
+          }
         },
         defaultThreshold: '0.15 (7 clusters)'
       }

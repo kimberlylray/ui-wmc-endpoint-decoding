@@ -338,6 +338,15 @@ body {
   color: var(--text);
 }
 
+/* Per-tract image row (radar + wordcloud side by side) */
+.tract-img-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  max-width: 900px;
+  margin-bottom: 8px;
+}
+
 /* ─── Tract View ───────────────────────────────────────────────── */
 .show-cluster-btn {
   margin-left: auto;

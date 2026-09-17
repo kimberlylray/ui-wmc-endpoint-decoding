@@ -68,14 +68,36 @@ The original filenames from Python scripts (e.g. `1_LPI+RAS_thr-15_surf.png`) ne
 
 ## Adding a new threshold / clustering
 
-1. Create a subfolder under `testdata/` with matrix.csv, clusters.json, dendro.png, and `{n}_surf/radar/wordcloud.png` files
+### With cluster images (dendro + per-cluster surf/radar/wordcloud)
+
+1. Create a subfolder under `testdata/` with `matrix.csv`, `clusters.json`, `dendro.png`, and `{n}_surf/radar/wordcloud.png` files
 2. Add the entry to `config.thresholds` in `index.html`:
    ```js
    thresholds: {
-     '0.15 (7 clusters)': 'thr-15',
-     '0.20 (7 clusters)': 'thr-20'   // ← add here
+     '0.20 (7 clusters)': {
+       folder: 'thr-20',
+       tractImgsBase: 'https://...path-to-per-tract-images',  // optional
+       tractImgSuffix: 'thr-20'                                // must match filename suffix
+     }
    }
    ```
+
+### Without cluster images (matrix only)
+
+1. Create a subfolder under `testdata/` with only `matrix.csv`
+2. Add `noClusters: true` to hide Cluster tab/mode
+3. Optionally provide `tractImgsBase` URL pointing to per-tract radar/wordcloud images:
+   ```js
+   thresholds: {
+     '0.05': {
+       folder: 'thr-05',
+       noClusters: true,
+       tractImgsBase: 'https://raw.githubusercontent.com/.../threshold-05_tract_decoding',
+       tractImgSuffix: 'thr-05'
+     }
+   }
+   ```
+   Per-tract images must be named: `{tractName}_{tractImgSuffix}_{radar|wordcloud}.png`
 
 ## Running locally
 
