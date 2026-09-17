@@ -11,7 +11,9 @@ const CLUSTER_COLORS = [
   '#5aaccc', // 4 – blue
   '#9b75d4', // 5 – purple
   '#d47a5a', // 6 – orange
-  '#7abcd4'  // 7 – sky
+  '#7abcd4', // 7 – sky
+  '#b0c93e', // 8 – lime
+  '#e080c0'  // 9 – pink
 ];
 
 // Diverging colour scale: blue → white → red (for decoding scores)
