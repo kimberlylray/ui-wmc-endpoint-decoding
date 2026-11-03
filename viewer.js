@@ -170,6 +170,25 @@ const BRAIN_TEMPLATE = `
                   <span v-if="tab === 'cluster'">Cluster {{ selectedCluster }} · {{ brain.mode === 'bytract' ? 'coloured by tract' : brain.mode === 'none' ? 'networks only' : 'combined LPI + RAS' }}</span>
                   <span v-else>{{ tractLabel(selectedTract) }} · {{ brain.mode === 'both' ? 'LPI + RAS' : brain.mode === 'none' ? 'networks only' : brain.mode + ' endpoint' }}</span>
                   <span class="hint">drag to rotate · scroll to zoom</span>
+// Shared 3D endpoint-map panel, used by both the Cluster and Tract views.
+// Only one view is mounted at a time, so the canvas refs never collide.
+const SURF_PANEL_TEMPLATE = `
+            <!-- Live 3D cortical endpoint map, rendered from func.gii (tract, or max across a cluster's tracts) -->
+            <template v-if="surfBase && surfMeshBase">
+              <div class="tract-section-title">Cortical Endpoint Map (3D)</div>
+              <div class="tract-surf-row" data-tour="surf-map">
+                <div class="panel-card surf-card">
+                  <div class="panel-card-title">RAS orientation</div>
+                  <div class="surf-canvas-wrap">
+                    <canvas ref="surfCanvasRAS"></canvas>
+                    <div class="surf-overlay" v-if="surfStatus.RAS === 'loading'"><div class="spinner"></div></div>
+                    <div class="surf-overlay surf-empty" v-if="surfStatus.RAS === 'empty'">No RAS surface data for this selection</div>
+                    <div class="surf-overlay surf-empty" v-if="surfStatus.RAS === 'nomembers'">Cluster membership couldn't be computed for this threshold</div>
+                    <div class="surf-overlay surf-empty" v-if="surfStatus.RAS === 'nowebgl'">3D view unavailable (WebGL failed to start in this browser)</div>
+                  </div>
+                  <div class="surf-legend" v-if="surfStatus.RAS === 'ready'">
+                    <span>0</span><div class="legend-grad hot"></div><span>{{ surfMax.RAS.toFixed(2) }}</span>
+                  </div>
                 </div>
                 <div class="brain-legend" v-if="brain.status === 'ready' && brain.mode !== 'none'" :class="{ raised: brain.atlas && atlasInfo }">
                   <template v-if="brain.mode === 'bytract'">
@@ -255,6 +274,20 @@ const TOPICS_HEAD_TEMPLATE = `
                 <div class="seg" role="group" aria-label="Topics display">
                   <button :class="{ active: topicsMode === 'chart' }" @click="topicsMode = 'chart'">Profile</button>
                   <button :class="{ active: topicsMode === 'list' }" @click="topicsMode = 'list'">Ranked list</button>
+// Cluster View: ONE combined map — every member tract's LPI and RAS
+// endpoint maps merged (per-vertex max), like the "Cluster #N_LPI+RAS"
+// figures, coloured with the cluster's own colour ramp.
+const CLUSTER_SURF_TEMPLATE = `
+            <template v-if="surfBase && surfMeshBase">
+              <div class="tract-section-title">Cortical Endpoint Map (3D)</div>
+              <div class="panel-card surf-card" data-tour="surf-map" style="max-width:900px;">
+                <div class="panel-card-title">Cluster {{ selectedCluster }} — LPI + RAS combined</div>
+                <div class="surf-canvas-wrap">
+                  <canvas ref="surfCanvasRAS"></canvas>
+                  <div class="surf-overlay" v-if="surfStatus.RAS === 'loading'"><div class="spinner"></div></div>
+                  <div class="surf-overlay surf-empty" v-if="surfStatus.RAS === 'empty'">No surface data for this cluster's tracts</div>
+                  <div class="surf-overlay surf-empty" v-if="surfStatus.RAS === 'nomembers'">Cluster membership couldn't be computed for this threshold</div>
+                  <div class="surf-overlay surf-empty" v-if="surfStatus.RAS === 'nowebgl'">3D view unavailable (WebGL failed to start in this browser)</div>
                 </div>
                 <div class="controls">
                   <span class="bar-legend" style="margin:0"><i style="background:#e57536"></i>positive r <i style="background:#3b9fd0;margin-left:10px"></i>negative r</span>
@@ -323,7 +356,26 @@ Vue.component('wmc-viewer', {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01"/></svg>
           </button>
         </nav>
+    <!-- ── Header ─────────────────────────────────────────── -->
+    <header class="wmc-header">
+      <a href="index.html" class="wmc-home-link" title="Back to overview">←</a>
+      <div class="wmc-title">WMC Tract <span>Endpoint Decoding</span></div>
+      <div class="header-spacer"></div>
+      <div class="control-group" data-tour="threshold">
+        <label>Threshold</label>
+        <select v-model="selectedThreshold" @change="onThresholdChange">
+          <option v-for="(folder, label) in config.thresholds" :key="label" :value="label">{{ label }}</option>
+        </select>
       </div>
+      <div class="control-group" v-if="numClusters > 0">
+        <label>Clusters</label>
+        <span class="stat-chip">{{ numClusters }}</span>
+      </div>
+      <div class="control-group" v-if="tractOrder.length > 0">
+        <label>Tracts</label>
+        <span class="stat-chip">{{ tractOrder.length }}</span>
+      </div>
+      <button class="tour-help-btn" @click="startTour" title="Replay the intro tour">? Help</button>
     </header>
 
     <!-- ── Workflow stepper ─────────────────────────────────── -->
@@ -385,6 +437,20 @@ Vue.component('wmc-viewer', {
             <span>{{ tractSearch ? matchCount + ' of ' + tractOrder.length + ' tracts match' : 'Cluster tree · ' + tractOrder.length + ' tracts' }}</span>
           </div>
           <div class="dendro-wrap" v-if="clustering">
+        <!-- Sidebar mode tabs -->
+        <div class="sidebar-tabs" data-tour="sidebar-tabs">
+          <button class="stab" :class="{active: sideMode==='clusters'}" @click="sideMode='clusters'" v-if="clustersEnabled">
+            Clusters
+          </button>
+          <button class="stab" :class="{active: sideMode==='tracts'}" @click="sideMode='tracts'">
+            Tracts
+          </button>
+        </div>
+
+        <!-- CLUSTER MODE -->
+        <template v-if="sideMode==='clusters'">
+          <div class="sidebar-section">Dendrogram</div>
+          <div class="dendro-wrap" data-tour="dendrogram" v-if="clustering">
             <tract-dendrogram
               :clustering="clustering"
               :colors="clusterColors"
@@ -414,12 +480,58 @@ Vue.component('wmc-viewer', {
                 <span class="tract-btn-label">{{ tractLabel(t) }}</span><span class="side">{{ tractSide(t) }}</span>
               </button>
             </div>
+          <div class="sidebar-section">Clusters</div>
+          <div class="cluster-list" data-tour="cluster-list">
+            <button
+              v-for="c in clusters"
+              :key="c.id"
+              class="cluster-btn"
+              :class="{ active: selectedCluster === c.id }"
+              @click="selectCluster(c.id)"
+            >
+              <span class="cluster-dot" :style="{ background: c.color }"></span>
+              <span class="cluster-label">Cluster {{ c.id }}</span>
+              <span class="cluster-count" v-if="c.tracts.length">{{ c.tracts.length }} {{ c.tracts.length === 1 ? 'tract' : 'tracts' }}</span>
+            </button>
+          </div>
+        </template>
+
+        <!-- TRACT MODE -->
+        <template v-else>
+          <div class="sidebar-section" data-tour="tract-search" style="display:flex;align-items:center;gap:8px;">
+            <span>Tracts</span>
+            <input
+              class="tract-search"
+              v-model="tractSearch"
+              placeholder="Search…"
+              @focus="tractSearch=''"
+            />
+          </div>
+          <div class="cluster-list">
+            <button
+              v-for="t in filteredTracts"
+              :key="t"
+              class="tract-btn"
+              :class="{ active: selectedTract === t }"
+              @click="selectTract(t)"
+            >
+              <span class="cluster-dot" :style="{ background: tractClusterColor(t) }"></span>
+              <span class="tract-btn-label">{{ t }}</span>
+              <span class="cluster-count">C{{ tractClusterIndex(t) }}</span>
+            </button>
           </div>
         </div>
       </nav>
 
       <!-- ── Content ──────────────────────────────────────── -->
       <main class="wmc-content">
+
+        <!-- Tabs -->
+        <div class="wmc-tabs" data-tour="view-tabs">
+          <button class="tab-btn" :class="{active: tab==='cluster'}" @click="showClusterView" v-if="clustersEnabled">Cluster View</button>
+          <button class="tab-btn" :class="{active: tab==='tract'}"   @click="showTractView">Tract View</button>
+          <button class="tab-btn" :class="{active: tab==='matrix'}"  @click="tab='matrix'">Full Matrix</button>
+        </div>
 
         <!-- Loading -->
         <div class="tab-panel" v-if="loading">
@@ -479,6 +591,26 @@ Vue.component('wmc-viewer', {
                         <span class="topic-bar-val">{{ item.value.toFixed(3) }}</span>
                       </div>
                     </div>
+            ${CLUSTER_SURF_TEMPLATE}
+
+            <!-- Live decoding scores for this cluster (if cluster-matrix.csv exists for this threshold) -->
+            <template v-if="clusterMatrix[selectedCluster]">
+              <div class="tract-section-title">Top Cognitive Topics</div>
+              <div class="topics-row" data-tour="topics">
+              <div class="topic-bars">
+                <div v-for="item in clusterTopTopics" :key="item.topic" class="topic-bar-row clickable"
+                     :class="{ active: selectedTopic === item.topic }" role="button" tabindex="0"
+                     @click="toggleTopic(item.topic)" @keydown.enter.space.prevent="toggleTopic(item.topic)">
+                  <div class="topic-bar-label" :title="'Click to see all terms in ' + item.topic">{{ topicLabel(item.topic) }}</div>
+                  <div class="topic-bar-track">
+                    <div
+                      class="topic-bar-fill"
+                      :style="{
+                        width: clusterBarWidth(item.value) + '%',
+                        background: item.value >= 0 ? '#e07b7b' : '#4f8ef7'
+                      }"
+                    ></div>
+                    <span class="topic-bar-val">{{ item.value.toFixed(3) }}</span>
                   </div>
                   ${TOPIC_PANEL_TEMPLATE}
                 </div>
@@ -521,6 +653,18 @@ Vue.component('wmc-viewer', {
                     </select>
                   </label>
                 </div>
+            </div>
+
+            <!-- Network Correspondence: Dice overlap with canonical network atlases -->
+            <template v-if="networkAtlases.length">
+              <div class="tract-section-title" data-tour="network-corr" style="display:flex;align-items:center;">
+                Network Correspondence
+                <label class="network-atlas-label">
+                  Atlas
+                  <select class="network-atlas-select" v-model="networkAtlas">
+                    <option v-for="a in networkAtlases" :key="a" :value="a">{{ a }}</option>
+                  </select>
+                </label>
               </div>
               <p class="section-note">
                 Dice overlap between this cluster's combined endpoint map and each network of the selected
@@ -609,6 +753,27 @@ Vue.component('wmc-viewer', {
                           <div class="topic-bar-fill" :style="{ width: sideBarWidth(item.value) + '%', background: item.value >= 0 ? '#e57536' : '#3b9fd0' }"></div>
                           <span class="topic-bar-val">{{ item.value.toFixed(3) }}</span>
                         </div>
+${SURF_PANEL_TEMPLATE}
+            <!-- Decoding: joint (LPI + RAS) vs. each endpoint on its own, side by side -->
+            <div class="tract-section-title">Top Cognitive Topics — joint vs. each endpoint</div>
+            <p class="view-intro">
+              Explore the strongest topics associated with this tract's endpoints. Click a topic to
+              examine its full list of terms.
+            </p>
+            <div class="topics-row" data-tour="topics">
+              <div class="endpoint-cols">
+                <div class="endpoint-col" v-for="src in endpointSources" :key="src.key">
+                  <div class="endpoint-col-title">{{ src.label }}</div>
+                  <div v-if="!src.has" class="endpoint-empty">No {{ src.key }}-only decoding for this tract at this threshold.</div>
+                  <div v-else class="topic-bars">
+                    <div v-for="item in src.top" :key="item.topic" class="topic-bar-row clickable"
+                         :class="{ active: selectedTopic === item.topic }" role="button" tabindex="0"
+                         @click="toggleTopic(item.topic)" @keydown.enter.space.prevent="toggleTopic(item.topic)">
+                      <div class="topic-bar-label" :title="'Click to see all terms in ' + item.topic">{{ topicLabel(item.topic) }}</div>
+                      <div class="topic-bar-track">
+                        <div class="topic-bar-fill"
+                             :style="{ width: sideBarWidth(item.value) + '%', background: item.value >= 0 ? '#e07b7b' : '#4f8ef7' }"></div>
+                        <span class="topic-bar-val">{{ item.value.toFixed(3) }}</span>
                       </div>
                     </div>
                   </div>
@@ -658,6 +823,18 @@ Vue.component('wmc-viewer', {
                     </select>
                   </label>
                 </div>
+            </div>
+
+            <!-- Network Correspondence: Dice overlap with canonical network atlases -->
+            <template v-if="networkAtlases.length">
+              <div class="tract-section-title" data-tour="network-corr" style="display:flex;align-items:center;">
+                Network Correspondence
+                <label class="network-atlas-label">
+                  Atlas
+                  <select class="network-atlas-select" v-model="networkAtlas">
+                    <option v-for="a in networkAtlases" :key="a" :value="a">{{ a }}</option>
+                  </select>
+                </label>
               </div>
               <p class="section-note">
                 Dice overlap between this tract's combined (LPI + RAS) endpoint map and each network of the
@@ -707,6 +884,7 @@ Vue.component('wmc-viewer', {
             </div>
           </div>
           <div class="matrix-wrap" data-tour="matrix">
+          <div class="matrix-wrap" data-tour="matrix-table">
             <table class="matrix-table">
               <thead>
                 <tr>
@@ -788,6 +966,23 @@ Vue.component('wmc-viewer', {
       </div>
     </div>
 
+    <!-- ── Intro tour ──────────────────────────────────────── -->
+    <div class="tour-overlay" v-if="tourActive">
+      <div class="tour-dim" v-if="tourRect" :style="tourDimStyle"></div>
+      <div class="tour-popover" :class="{ centered: !tourRect }" :style="tourPopoverStyle">
+        <button class="tour-popover-close" @click="skipTour" aria-label="Close tour">×</button>
+        <div class="tour-popover-title">{{ currentTourStep.title }}</div>
+        <div class="tour-popover-body">{{ currentTourStep.body }}</div>
+        <div class="tour-popover-footer">
+          <span class="tour-step-count">{{ tourIndex + 1 }} / {{ tourSteps.length }}</span>
+          <div class="tour-popover-actions">
+            <button class="tour-btn tour-btn-ghost" @click="prevTourStep" v-if="tourIndex > 0">Back</button>
+            <button class="tour-btn tour-btn-primary" @click="nextTourStep">{{ tourIndex === tourSteps.length - 1 ? 'Done' : 'Next' }}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
   `,
 
@@ -840,6 +1035,13 @@ Vue.component('wmc-viewer', {
       dendroOpen: true,          // dendrogram shown in the sidebar
       openClusters: {},          // { clusterId: true } — expanded rows in the sidebar tree
       guideDismissed: readPref('wmc.guideDismissed') === '1'
+
+      // Intro tour (guided walkthrough) — see startTour()/buildTourSteps().
+      tourActive: false,
+      tourSteps: [],
+      tourIndex: 0,
+      tourRect: null,            // target element's viewport rect for the current step, or null (centered step)
+      tourPopoverPos: { top: 0, left: 0 }
     };
   },
 
@@ -1096,6 +1298,22 @@ Vue.component('wmc-viewer', {
         .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
         .slice(0, 15)
         .map(([topic, value]) => ({ topic, value }));
+    },
+
+    // ── Intro tour ──────────────────────────────────────────────────
+    currentTourStep() { return this.tourSteps[this.tourIndex] || {}; },
+    // Spotlight cutout: a box-shadow with a huge spread dims the whole page
+    // except this element's own box, which lands exactly on the target.
+    tourDimStyle() {
+      const r = this.tourRect;
+      return {
+        top: r.top + 'px', left: r.left + 'px',
+        width: r.width + 'px', height: r.height + 'px'
+      };
+    },
+    tourPopoverStyle() {
+      if (!this.tourRect) return {};
+      return { top: this.tourPopoverPos.top + 'px', left: this.tourPopoverPos.left + 'px' };
     }
   },
 
@@ -1104,6 +1322,8 @@ Vue.component('wmc-viewer', {
     // "Full Matrix" cards (explorer.html#cluster|tract|matrix).
     const hashTab = (location.hash || '').replace('#', '');
     if (hashTab === 'tract') { this.tab = 'tract'; }
+    this._hashDeepLink = !!hashTab;   // skip the auto intro tour if arriving via a landing-page deep link
+    if (hashTab === 'tract') { this.tab = 'tract'; this.sideMode = 'tracts'; }
     else if (hashTab === 'matrix') { this.tab = 'matrix'; }
     else if (hashTab === 'cluster') { this.tab = 'cluster'; }
 
@@ -1150,10 +1370,163 @@ Vue.component('wmc-viewer', {
       } else {
         this.disposeSurfScenes();
       }
+    },
+    // First-visit auto-tour: fires once, right after the first successful
+    // data load, skipped for a landing-page deep link (that visitor already
+    // chose a specific view) or if the tour's been seen before (localStorage).
+    loading(newVal) {
+      if (newVal || this._tourAutoChecked) return;
+      this._tourAutoChecked = true;
+      if (this._hashDeepLink) return;
+      let seen = false;
+      try { seen = !!localStorage.getItem('wmc_tour_seen'); } catch (e) { /* storage unavailable */ }
+      if (seen) return;
+      try { localStorage.setItem('wmc_tour_seen', '1'); } catch (e) { /* storage unavailable */ }
+      this.$nextTick(() => setTimeout(() => this.startTour(), 700));
     }
   },
 
   methods: {
+    // ── Intro tour ────────────────────────────────────────────────
+    // Each step: { target?: '<data-tour value>', title, body, before?: fn }.
+    // `target` omitted ⇒ a centered step (welcome/closing). `before` runs
+    // right before the step is shown, to switch tab/sideMode/selection so
+    // the target element actually exists in the DOM.
+    buildTourSteps() {
+      const steps = [];
+      steps.push({
+        title: 'Welcome to the WMC Tract Endpoint Decoding Viewer',
+        body: 'A quick tour of how to explore the data — about a minute. Click Next to begin, or × to skip.'
+      });
+      steps.push({
+        target: 'threshold',
+        title: 'Pick a threshold',
+        body: "Each threshold re-clusters the 51 tracts into a different number of functional groups, with its own decoding. Start here."
+      });
+      steps.push({
+        target: 'view-tabs',
+        title: 'Three ways to explore',
+        body: 'Cluster View groups tracts by similarity, Tract View looks at one tract at a time, and Full Matrix shows every tract × topic score at once.'
+      });
+      if (this.clustersEnabled) {
+        steps.push({
+          target: 'sidebar-tabs',
+          before: () => { this.showClusterView(); },
+          title: 'Browse by cluster or tract',
+          body: 'Switch the sidebar between browsing clusters or searching for a specific tract.'
+        });
+        steps.push({
+          target: 'dendrogram',
+          before: () => { this.sideMode = 'clusters'; this.tab = 'cluster'; },
+          title: 'The dendrogram',
+          body: 'Shows how tracts group together by functional similarity. Click a branch to open a cluster, or a leaf to jump straight to one tract.'
+        });
+        steps.push({
+          target: 'cluster-list',
+          before: () => { this.sideMode = 'clusters'; this.tab = 'cluster'; },
+          title: 'Or pick a cluster directly',
+          body: 'Each cluster lists its member tract count — click one to see its combined profile.'
+        });
+        steps.push({
+          target: 'surf-map',
+          before: () => {
+            this.sideMode = 'clusters'; this.tab = 'cluster';
+            if (!this.selectedCluster && this.clusters.length) this.selectCluster(this.clusters[0].id);
+          },
+          title: 'Live 3D endpoint map',
+          body: 'Once a cluster (or tract) is selected, its cortical endpoint map renders live in 3D — drag to rotate, scroll to zoom.'
+        });
+        steps.push({
+          target: 'topics',
+          before: () => { this.sideMode = 'clusters'; this.tab = 'cluster'; },
+          title: 'Top Cognitive Topics',
+          body: 'The strongest NeuroQuery topics for this selection — red bars are positive associations, blue are negative. Click a bar for the full term list.'
+        });
+        steps.push({
+          target: 'network-corr',
+          before: () => { this.sideMode = 'clusters'; this.tab = 'cluster'; },
+          title: 'Network Correspondence',
+          body: 'Dice overlap with canonical functional brain networks. Use the Atlas dropdown to compare against different reference parcellations.'
+        });
+      }
+      steps.push({
+        target: 'tract-search',
+        before: () => {
+          this.showTractView();
+          if (!this.selectedTract && this.tractOrder.length) this.selectTract(this.tractOrder[0]);
+        },
+        title: this.clustersEnabled ? 'Or explore one tract at a time' : 'Search for a tract',
+        body: "Tract View breaks a single tract's endpoints into RAS and LPI orientations, decoded separately."
+      });
+      if (!this.clustersEnabled) {
+        steps.push({ target: 'surf-map', title: 'Live 3D endpoint map', body: 'Drag to rotate, scroll to zoom.' });
+        steps.push({ target: 'topics', title: 'Top Cognitive Topics', body: 'Click a bar for the full term list.' });
+        steps.push({ target: 'network-corr', title: 'Network Correspondence', body: 'Dice overlap with canonical functional brain networks, via the Atlas dropdown.' });
+      }
+      steps.push({
+        target: 'matrix-table',
+        before: () => { this.tab = 'matrix'; },
+        title: 'Full Matrix',
+        body: 'Every tract × topic decoding score at once — hover a cell for the exact value, or click a row to open that tract.'
+      });
+      steps.push({
+        title: "That's it!",
+        body: 'Click the "? Help" button in the header any time to replay this tour.'
+      });
+      return steps;
+    },
+
+    startTour() {
+      this.tourSteps = this.buildTourSteps();
+      this.goToTourStep(0, 1);
+    },
+
+    skipTour() {
+      this.tourActive = false;
+      try { localStorage.setItem('wmc_tour_seen', '1'); } catch (e) { /* storage unavailable */ }
+    },
+
+    prevTourStep() { this.goToTourStep(this.tourIndex - 1, -1); },
+    nextTourStep() { this.goToTourStep(this.tourIndex + 1, 1); },
+
+    // dir says which way to keep skipping if a step's target element isn't
+    // in the DOM for the current config (e.g. no-cluster thresholds).
+    goToTourStep(i, dir) {
+      if (i < 0 || i >= this.tourSteps.length) { this.skipTour(); return; }
+      const step = this.tourSteps[i];
+      this.tourIndex = i;
+      this.tourActive = true;
+      if (step.before) step.before();
+      this.$nextTick(() => {
+        setTimeout(() => {
+          if (!this.positionTour(step)) this.goToTourStep(i + dir, dir);
+        }, step.target ? 260 : 0);
+      });
+    },
+
+    // Measures the step's target element and stores its viewport rect (for
+    // the spotlight) plus a clamped popover position next to it. Returns
+    // false if the target isn't present/visible, so the caller can skip it.
+    positionTour(step) {
+      if (!step.target) { this.tourRect = null; return true; }
+      const el = this.$el.querySelector('[data-tour="' + step.target + '"]');
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center', behavior: 'auto' });
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return false;
+      const pad = 6;
+      this.tourRect = { top: r.top - pad, left: r.left - pad, width: r.width + pad * 2, height: r.height + pad * 2 };
+      const popW = 320, popH = 170, margin = 14;
+      let top = this.tourRect.top + this.tourRect.height + margin;
+      if (top + popH > window.innerHeight) top = this.tourRect.top - popH - margin;
+      if (top < margin) top = margin;
+      let left = this.tourRect.left;
+      if (left + popW > window.innerWidth - margin) left = window.innerWidth - popW - margin;
+      if (left < margin) left = margin;
+      this.tourPopoverPos = { top, left };
+      return true;
+    },
+
     onThresholdChange() {
       // The loading panel below unmounts the Tract View's canvases, so release
       // the old WebGL scenes now; refreshTractSurfaces() recreates them on the
